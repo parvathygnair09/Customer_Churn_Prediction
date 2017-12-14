@@ -1,0 +1,286 @@
+## Customer Churn Prediction
+## Data mining models
+## Created : 12/1/2017
+## Modified : 12/2/2017
+##============================
+
+## References : 
+## https://datascienceplus.com/predict-customer-churn-logistic-regression-decision-tree-and-random-forest/
+
+## Customer churn is when customers or subscribers to services of a company quit using their services or stip doing business with the company. This analysis uses the telecom churn dataset from IBM Watson Analytics. The business challenge for this problem is - A telecommunications company [Telco] is concerned about the number of customers leaving their landline business for cable competitors. They need to understand who is leaving. Imagine that you’re an analyst at this company and you have to find out who is leaving and why.
+
+rm(list = ls(all = TRUE))
+
+## Load the necessary packages
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(gridExtra)
+library(ggthemes)
+library(MASS)
+library(caret)
+library(randomForest)
+library(party)
+library(summarytools)
+
+###=====================================================#
+###          Data Extraction and Cleaning
+###=====================================================#
+
+## Read in the data file and save it 
+# fileLoc <- "https://community.watsonanalytics.com/wp-content/uploads/2015/03/WA_Fn-UseC_-Telco-Customer-Churn.csv?cm_mc_uid=60538928144815121676500&cm_mc_sid_50200000=1512167650&cm_mc_sid_52640000=1512167650"
+
+# churn <- read.csv(fileLoc)
+# save(churn, file = "churn.RData")
+
+load("churn.RData")
+str(churn)
+
+## Data includes customer Id, demographics, payment etc. There are 7043 observations and 21 variables. The arget variable is Churn.
+## Churn - customers who left within the last month
+## Services - phone, multiple lines, internet, online security, online backup, device protection, tech support and streaming movies
+## Account Info. - tenure, contract, payment method, paperless billing, monthly charges and total charges.
+## Demographics - Gender, age range, and if they had partners or dependents
+
+colSums(is.na(churn))
+## There are 11 obs with NAs in TotalCharges. Removing these rows.
+
+churn <- churn[complete.cases(churn), ]
+
+head(churn)
+dfSummary(churn, style = "grid", plain.ascii = TRUE)
+
+## As evident in the summary, variables needs cleaning up. For e.g. convert "No internet service" to "No".
+churn <- churn %>% 
+        mutate(MultipleLines = ifelse(MultipleLines %in% c("No", "No phone service"), "No", "Yes"),
+               OnlineSecurity = ifelse(OnlineSecurity %in% c("No", "No internet service"), "No", "Yes"),
+               OnlineBackup = ifelse(OnlineBackup %in% c("No", "No internet service"), "No", "Yes"),
+               DeviceProtection = ifelse(DeviceProtection %in% c("No", "No internet service"), "No", "Yes"),
+               TechSupport = ifelse(TechSupport %in% c("No", "No internet service"), "No", "Yes"),
+               StreamingTV = ifelse(StreamingTV %in% c("No", "No internet service"), "No", "Yes"),
+               StreamingMovies = ifelse(StreamingMovies %in% c("No", "No internet service"), "No", "Yes"),
+               SeniorCitizen = ifelse(SeniorCitizen == 1, "Yes", "No"))
+
+## Range of tenure is between 1 and 72
+range(churn$tenure)
+
+churn <- churn %>% 
+        mutate(tenure_group = cut(tenure, 
+                        breaks = c(0, 12, 24, 48, 60, Inf), 
+                   labels = c("0-12 Month", "12-24 Month", "24-48 Month", "48-60 Month", ">60 Month")))
+table(churn$tenure_group) 
+
+## Convert modified variables from character to factors
+columns <- c("MultipleLines", "OnlineSecurity", "OnlineBackup",  "DeviceProtection",
+             "TechSupport", "StreamingTV", "StreamingMovies", "SeniorCitizen", "tenure_group")
+ 
+churn[columns] <- lapply(churn[columns], factor)
+
+###========================================================#
+##              Exploratory Data Analysis
+###========================================================#
+
+## Correlation between numeric terms
+numeric.var <- sapply(churn, is.numeric)
+corr.matrix <- cor(churn[,numeric.var])
+corrplot(corr.matrix, main="\n\nCorrelation Plot for Numerical Variables", method="number")
+
+## Since monthly charges and total charges are correlated, one of them is removed.
+
+## Finally, remove variable not required for modeling 
+churn <- churn %>% 
+        dplyr::select(-c(TotalCharges, tenure, customerID))
+
+##==========================
+## Visualize the attributes
+##==========================
+
+drawPlot <- function(var, xlab){
+        sub.churn <- as.data.frame(churn[,var])
+        names(sub.churn) <- "category"
+        p <- ggplot(sub.churn, aes(x=category)) + ggtitle(xlab) + xlab(xlab) +
+                geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+}
+
+
+## Demographics
+p1 <- drawPlot("gender", "Gender")
+p2 <- drawPlot("SeniorCitizen", "Senior Citizen")
+p3 <- drawPlot("Partner", "Partner")
+p4 <- drawPlot("Dependents", "Dependents")
+grid.arrange(p1, p2, p3, p4, ncol=2)
+
+## Balanced male-female ratio of customers. Majority of whom are non senior citizens and independent. 
+
+## Visualize service availability
+p5 <- drawPlot("PhoneService", "Phone Service")
+p6 <- drawPlot("MultipleLines", "Multiple Lines")
+p7 <- drawPlot("InternetService", "Internet Service")
+p8 <- drawPlot("OnlineSecurity", "Online Security")
+grid.arrange(p5, p6, p7, p8, ncol=2)
+
+## Majority of customers have phone service, multiple lines, online security, fiber optic internet service.
+
+## Visualize other services
+p9 <- drawPlot("OnlineBackup", "Online Backup")
+p10 <- drawPlot("DeviceProtection", "Device Protection")
+p11 <- drawPlot("TechSupport", "Tech Support")
+p12 <- drawPlot("StreamingTV", "Streaming TV")
+p13 <- drawPlot("StreamingMovies", "Streaming Movies")
+grid.arrange(p9, p10, p11, p12, p13, ncol=2)
+
+## Also the maority of customers have the following features - online backup, device protection, tech support, streaming TV and streaming movies
+
+## Payment features
+p14 <- drawPlot("Contract", "Contract")
+p15 <- drawPlot("PaperlessBilling", "Paperless Billing")
+p16 <- drawPlot("PaymentMethod", "Payment Method")
+p17 <- drawPlot("tenure_group", "Tenure Group") 
+grid.arrange(p14, p15, p16, p17, ncol=2)
+
+## Majority of customers have month-to-month contract, paperless billing, and pay electronic checks. Finally, majority of the customers are in within the 1 year tenure.
+
+## The data now has all the bunch of variables relating to the features of an individual customer.
+
+###===================================================#
+##                   Mining Models
+###===================================================#
+
+##=============================
+## 1. Logistic Regression
+##=============================
+
+## Create test and training set
+set.seed(2017)
+intrain <- createDataPartition(churn$Churn, p = 0.7, list = FALSE)
+
+train <- churn[intrain, ]
+test <- churn[-intrain, ]
+
+dim(train); dim(test)
+
+## Fit the Logistic Regression Model
+glm.fit <- glm(Churn ~ ., family = binomial(link = "logit"), data = train)
+print(summary(glm.fit))
+
+## Odds ratio
+exp(cbind(OR=coef(glm.fit), confint(glm.fit)))
+
+## Interpretation of results
+## Males have higher odds to churn than females
+
+anova(glm.fit, test = "Chisq")
+## Analysis of deviance table : https://stats.stackexchange.com/questions/59879/logistic-regression-anova-chi-square-test-vs-significance-of-coefficients-ano
+## https://rstudio-pubs-static.s3.amazonaws.com/108528_3395f9cf41c04335aa0b1b291e8de72e.html
+
+## The summary table gives the test of hypothesis of comparing a smaller model to an incrmental model starting from first variable to last. The deviance is the reduction after adding the new variable.
+## As observed, adding "InterNetService", "Contract" and "tenure_group" are the top three variables resulting in a drop in deviance. Although other variables too are statistically significant, the effect size is lower.
+
+## Use this model to predict churn
+test$Churn1 <- as.character(test$Churn)
+test$Churn1[test$Churn1 == "No"] <- "0"
+test$Churn1[test$Churn1 == "Yes"] <- "1"
+
+glm.probs <- predict(glm.fit, newdata = test, type = "response")
+glm.pred <- rep("0", length(glm.probs))
+glm.pred[glm.probs > 0.5] <- "1"
+
+table(glm.pred, test$Churn1)
+
+## Function to compute accuracy, precision and recall
+## https://stackoverflow.com/questions/12572357/precision-recall-and-f-measure-in-r
+measurePrecisionRecall <- function(predict, actual_labels){
+        precision <- sum(predict & actual_labels) / sum(predict)
+        recall <- sum(predict & actual_labels) / sum(actual_labels)
+        fmeasure <- 2 * precision * recall / (precision + recall)
+        
+        cat('precision:  ')
+        cat(precision * 100)
+        cat('%')
+        cat('\n')
+        
+        cat('recall:     ')
+        cat(recall * 100)
+        cat('%')
+        cat('\n')
+        
+        cat('f-measure:  ')
+        cat(fmeasure * 100)
+        cat('%')
+        cat('\n')
+}
+
+## Prediction Accuracy
+glm.predAcc <- mean(glm.pred == test$Churn1)
+glm.missClassError <- 1-glm.predAcc
+
+## Data is unbalanced - compute precision and accuracy
+glm.precision <- mean(test$Churn1[glm.pred == "1"] == "1")   ## Precision - true + out of all predicted +
+glm.recall <- mean(glm.pred[test$Churn1 == "1"] == "1")   ## Recall - true + out of all actual +
+
+measurePrecisionRecall(as.numeric(glm.pred), as.numeric(test$Churn1))
+caret::confusionMatrix(glm.pred, test$Churn1, positive = "1")
+
+## Prediction accuracy is around 79%. Precision is 64,2%.
+
+##========================
+## 2. Decision Tree
+##========================
+
+## partikit for more intuitive plot - overrides party package
+library(partykit)
+dt.fit1 <- ctree(Churn ~ Contract + tenure_group + PaperlessBilling, data = train)
+dt.fit1
+# plot(as.simpleparty(dt.fit))
+plot(dt.fit1, type = "simple")
+
+dt.pred1 <- predict(dt.fit1, test)
+dt.predAcc1 <- mean(dt.pred1 == test$Churn)
+## Prediction accuracy of 76.3%
+
+dt.fit2 <- ctree(Churn ~ ., data = train)
+dt.fit2
+plot(dt.fit2, type = "simple")
+
+dt.pred2 <- predict(dt.fit2, test)
+dt.predAcc2 <- mean(dt.pred2 == test$Churn)
+
+## Prediction accuracy of 78%. Improvedment from the earlier model
+
+##============================
+## 3. Random Forest
+##=============================
+
+rf.fit <- randomForest(Churn ~ . , data = train)
+print(rf.fit)
+
+## Out-of-bag error is 20.71%
+
+## Use this model to predict churn
+rf.pred <- predict(rf.fit, test)
+caret::confusionMatrix(rf.pred, test$Churn, positive = "Yes")
+
+## Prediction accuracy is 78.5%. Recall is 49.5%. i.e. of all actual churn cases in the test data only about 50% is predicted correctly.
+
+## Plot the error rate
+plot(rf.fit)  ## plots the error rate vs. the number of trees
+
+## As the number of trees increase, the OOB error decreases and then it stays constant.
+
+## Tune random forest model
+## Search for optimal value of mtry for randomForest()
+rf.tune <- tuneRF(train[, -18], train[, 18], stepFactor = 0.5, plot = TRUE, ntreeTry = 200, trace = TRUE, improve = 0.05)
+
+## Fit the model after tuning - take cue from the previous two parameters
+rf.fit.new <- randomForest(Churn ~ ., data = train, ntree = 200, mtry = 2, importance = T, proximity = T)
+print(rf.fit.new)
+
+## Error rate is slightly lower.
+## Precdiction and Confusion matrix after tuning
+rf.pred.new <- predict(rf.fit.new, test)
+caret::confusionMatrix(rf.pred.new, test$Churn, positive = "Yes")
+
+## Accuracy is still around 78.5%
+
+## variable importance plot
+varImpPlot(rf.fit.new, sort = T, main = "Variable Importance")
